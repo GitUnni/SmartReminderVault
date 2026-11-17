@@ -1,7 +1,9 @@
+import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import * as ImagePicker from 'expo-image-picker';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
-import { useEffect, useRef, useState, type ComponentRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
   Image,
   Pressable,
@@ -9,46 +11,173 @@ import {
   Text, TextInput,
   View,
 } from 'react-native';
+import DateField from '../components/DateField';
+import { formatDate, formatDetailDate, parseYMD, toYMD } from '../lib/dates';
 import { useDocuments } from '../lib/DocumentsContext';
-import { CATEGORIES } from '../types/document';
+import { supabase } from '../lib/supabase';
+import { CATEGORIES, type Detail } from '../types/document';
+
+// Maps the AI's JSON keys to labels shown in the Details card
+const FIELD_LABELS: Record<string, Record<string, string>> = {
+  medicine: {
+    manufacturingDate: 'Manufactured',
+    dosage: 'Dosage',
+    schedule: 'Schedule (please verify)',
+    instructions: 'Instructions',
+    batchNumber: 'Batch number',
+  },
+  identity: { documentName: 'Document', documentNumber: 'Number', holderName: 'Holder' },
+  insurance: {
+    provider: 'Provider',
+    policyNumber: 'Policy number',
+    amount: 'Amount',
+    holderName: 'Holder',
+  },
+  other: { description: 'Description' },
+};
+
+// AI keys whose values are dates (shown with a date picker)
+const DATE_KEYS = ['manufacturingDate'];
+
+const TYPE_TO_CATEGORY: Record<string, string> = {
+  medicine: 'Medicine',
+  identity: 'ID',
+  insurance: 'Insurance',
+  other: 'Other',
+};
+
+const newId = () => Date.now().toString() + Math.random().toString(36).slice(2, 6);
 
 export default function AddScreen() {
   const router = useRouter();
   const {
     documents, addDocument, updateDocument, deleteDocument,
     pendingImageUri, setPendingImageUri,
+    setPendingImageBase64,
   } = useDocuments();
   const { id } = useLocalSearchParams<{ id?: string }>();
 
   // If an id was passed, we are editing an existing document
   const existing = id ? documents.find((d) => d.id === id) : undefined;
-  const existingDate = existing ? new Date(existing.expiryDate) : null;
 
   const [imageUri, setImageUri] = useState<string | null>(
     existing ? existing.imageUri : pendingImageUri
   );
   const [name, setName] = useState(existing?.name ?? '');
   const [category, setCategory] = useState(existing?.category ?? CATEGORIES[0]);
-
-  // Date is kept as three separate text fields so it is fully editable.
-  // Later, OCR can simply call setDay / setMonth / setYear to prefill them.
-  const [day, setDay] = useState(
-    existingDate ? String(existingDate.getDate()).padStart(2, '0') : ''
+  const [expiry, setExpiry] = useState<Date | null>(
+    existing?.expiryDate ? new Date(existing.expiryDate) : null
   );
-  const [month, setMonth] = useState(
-    existingDate ? String(existingDate.getMonth() + 1).padStart(2, '0') : ''
-  );
-  const [year, setYear] = useState(existingDate ? String(existingDate.getFullYear()) : '');
+  const [details, setDetails] = useState<Detail[]>(existing?.details ?? []);
 
-  const monthRef = useRef<ComponentRef<typeof TextInput>>(null);
-  const yearRef = useRef<ComponentRef<typeof TextInput>>(null);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  const runId = useRef(0); // lets us ignore results from an outdated analysis
 
-  // Clear the handed-over image so the next "Add document" starts fresh
+  // On first open: clear the handed-over image, and analyze it if it's a new document
   useEffect(() => {
+    const uri = pendingImageUri;
     setPendingImageUri(null);
+    setPendingImageBase64(null);
+    if (!existing && uri) analyze(uri);
   }, []);
 
-  const onlyDigits = (text: string) => text.replace(/[^0-9]/g, '');
+  // ---------- Details helpers ----------
+  const updateDetail = (detailId: string, patch: Partial<Detail>) =>
+    setDetails((prev) => prev.map((d) => (d.id === detailId ? { ...d, ...patch } : d)));
+
+  const removeDetail = (detailId: string) =>
+    setDetails((prev) => prev.filter((d) => d.id !== detailId));
+
+  const addDetail = (kind: 'text' | 'date') =>
+    setDetails((prev) => [...prev, { id: newId(), label: '', value: '', kind }]);
+
+  const askAddDetail = () => {
+    Alert.alert('Add label', 'What kind of detail?', [
+      { text: 'Text', onPress: () => addDetail('text') },
+      { text: 'Date', onPress: () => addDetail('date') },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  };
+
+  // ---------- AI ----------
+  const applyResult = (r: any) => {
+    if (!r || r.type === 'unknown' || !r.type) {
+      console.log('AI result:', JSON.stringify(r));
+      const why = r?.error ? ` (${String(r.error).slice(0, 220)})` : '';
+      setNote(`Couldn't read this automatically. Please fill in the details yourself.${why}`);
+      return;
+    }
+    if (r.type === 'menu') {
+      setNote('This looks like a menu. Menu scanning is coming soon. You can still save it manually.');
+      return;
+    }
+
+    setCategory(TYPE_TO_CATEGORY[r.type] ?? 'Other');
+    if (typeof r.name === 'string' && r.name.trim()) setName(r.name.trim());
+
+    const exp = typeof r.expiryDate === 'string' ? parseYMD(r.expiryDate) : null;
+    setExpiry(exp);
+
+    const labels = FIELD_LABELS[r.type] ?? {};
+    const extracted: Detail[] = [];
+    for (const key of Object.keys(labels)) {
+      const raw = r[key];
+      if (!raw) continue;
+      const value = String(raw);
+      const isDate = DATE_KEYS.includes(key) && parseYMD(value) !== null;
+      extracted.push({ id: newId(), label: labels[key], value, kind: isDate ? 'date' : 'text' });
+    }
+    setDetails(extracted);
+
+    setNote(
+      exp
+        ? 'Filled in by AI. Please check everything before saving.'
+        : 'Filled in by AI, but no expiry date was found. You can add one below if the item has one.'
+    );
+  };
+
+  // Shrinks the photo so the upload is small and fast
+  const shrink = async (uri: string): Promise<string> => {
+    const ctx = ImageManipulator.manipulate(uri);
+    ctx.resize({ width: 1280 });
+    const img = await ctx.renderAsync();
+    const out = await img.saveAsync({ format: SaveFormat.JPEG, compress: 0.6, base64: true });
+    return out.base64 as string;
+  };
+
+  const analyze = async (uri: string) => {
+    const myRun = ++runId.current;
+    setAnalyzing(true);
+    setNote(null);
+    try {
+      const base64 = await shrink(uri);
+      if (myRun !== runId.current) return;
+
+      const timeout = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Timed out after 45 seconds')), 45000)
+      );
+      const call = supabase.functions.invoke('bright-service', {
+        body: { imageBase64: base64, mediaType: 'image/jpeg' },
+      });
+      const { data, error } = (await Promise.race([call, timeout])) as any;
+
+      if (myRun !== runId.current) return; // user changed the photo meanwhile
+      if (error || !data) throw error ?? new Error('Empty response');
+      applyResult(data);
+    } catch (e: any) {
+      let detail = e?.message ?? 'unknown error';
+      try {
+        if (e?.context?.text) detail += ' | ' + (await e.context.text());
+      } catch {}
+      console.log('analyze error:', detail);
+      if (myRun === runId.current) {
+        setNote(`Couldn't analyze the photo. Please fill in the details yourself. (${detail.slice(0, 160)})`);
+      }
+    } finally {
+      if (myRun === runId.current) setAnalyzing(false);
+    }
+  };
 
   const pickImage = async () => {
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -60,23 +189,24 @@ export default function AddScreen() {
       mediaTypes: ['images'],
       quality: 0.8,
     });
-    if (!result.canceled) setImageUri(result.assets[0].uri);
+    if (result.canceled) return;
+    setImageUri(result.assets[0].uri);
+    analyze(result.assets[0].uri);
   };
 
-  const buildDate = (): Date | null => {
-    const d = Number(day);
-    const m = Number(month);
-    const y = Number(year);
-    if (!d || !m || year.length !== 4) return null;
-    const date = new Date(y, m - 1, d);
-    // Rejects impossible dates like 31/02/2027
-    if (date.getFullYear() !== y || date.getMonth() !== m - 1 || date.getDate() !== d) {
-      return null;
-    }
-    return date;
+  const removeImage = () => {
+    runId.current++; // cancel any analysis in progress
+    setAnalyzing(false);
+    setNote(null);
+    setImageUri(null);
   };
 
+  // ---------- Save / delete ----------
   const save = () => {
+    if (analyzing) {
+      Alert.alert('Please wait', 'The photo is still being analyzed.');
+      return;
+    }
     if (!imageUri) {
       Alert.alert('Photo needed', 'Please choose a photo of the document.');
       return;
@@ -85,16 +215,17 @@ export default function AddScreen() {
       Alert.alert('Name required', 'Please give your document a name.');
       return;
     }
-    const date = buildDate();
-    if (!date) {
-      Alert.alert('Invalid date', 'Please enter a valid expiry date (DD / MM / YYYY).');
-      return;
-    }
+    // Drop empty rows; give unnamed rows a default label
+    const cleaned = details
+      .filter((d) => d.value.trim())
+      .map((d) => ({ ...d, label: d.label.trim() || 'Detail', value: d.value.trim() }));
+
     const data = {
       name: name.trim(),
       category,
-      expiryDate: date.toISOString(),
+      expiryDate: expiry ? expiry.toISOString() : null,
       imageUri,
+      details: cleaned,
     };
     if (existing) updateDocument(existing.id, data);
     else addDocument(data);
@@ -124,7 +255,7 @@ export default function AddScreen() {
       {imageUri ? (
         <View style={styles.previewWrap}>
           <Image source={{ uri: imageUri }} style={styles.preview} />
-          <Pressable style={styles.closeBtn} onPress={() => setImageUri(null)} hitSlop={8}>
+          <Pressable style={styles.closeBtn} onPress={removeImage} hitSlop={8}>
             <Text style={styles.closeText}>✕</Text>
           </Pressable>
         </View>
@@ -132,6 +263,18 @@ export default function AddScreen() {
         <Pressable style={styles.placeholder} onPress={pickImage}>
           <Text style={styles.placeholderText}>+ Choose a photo</Text>
         </Pressable>
+      )}
+
+      {analyzing && (
+        <View style={styles.banner}>
+          <ActivityIndicator />
+          <Text style={styles.bannerText}>Analyzing your document…</Text>
+        </View>
+      )}
+      {note && !analyzing && (
+        <View style={styles.banner}>
+          <Text style={styles.bannerText}>{note}</Text>
+        </View>
       )}
 
       <Text style={styles.label}>Name</Text>
@@ -155,44 +298,63 @@ export default function AddScreen() {
         ))}
       </View>
 
-      <Text style={styles.label}>Expiry / renewal date</Text>
-      <View style={styles.dateRow}>
-        <TextInput
-          style={[styles.input, styles.dateSmall]}
-          placeholder="DD"
-          keyboardType="number-pad"
-          maxLength={2}
-          value={day}
-          onChangeText={(t) => {
-            const v = onlyDigits(t);
-            setDay(v);
-            if (v.length === 2) monthRef.current?.focus();
-          }}
-        />
-        <Text style={styles.slash}>/</Text>
-        <TextInput
-          ref={monthRef}
-          style={[styles.input, styles.dateSmall]}
-          placeholder="MM"
-          keyboardType="number-pad"
-          maxLength={2}
-          value={month}
-          onChangeText={(t) => {
-            const v = onlyDigits(t);
-            setMonth(v);
-            if (v.length === 2) yearRef.current?.focus();
-          }}
-        />
-        <Text style={styles.slash}>/</Text>
-        <TextInput
-          ref={yearRef}
-          style={[styles.input, styles.dateLarge]}
-          placeholder="YYYY"
-          keyboardType="number-pad"
-          maxLength={4}
-          value={year}
-          onChangeText={(t) => setYear(onlyDigits(t))}
-        />
+      <Text style={styles.label}>Details</Text>
+      <View style={styles.detailsBox}>
+        {/* Expiry row: optional, and used for sorting and reminders */}
+        <View style={styles.row}>
+          <Text style={styles.fixedLabel}>Expiry / renewal date</Text>
+          <View style={styles.rowValue}>
+            <DateField
+              value={expiry}
+              text={expiry ? formatDate(expiry) : null}
+              placeholder="Not set"
+              onChange={setExpiry}
+            />
+          </View>
+          {expiry ? (
+            <Pressable style={styles.removeBtn} onPress={() => setExpiry(null)} hitSlop={8}>
+              <Text style={styles.removeText}>✕</Text>
+            </Pressable>
+          ) : (
+            <View style={styles.removeBtn} />
+          )}
+        </View>
+
+        {/* Editable, deletable detail rows */}
+        {details.map((d) => (
+          <View key={d.id} style={styles.row}>
+            <TextInput
+              style={styles.rowLabel}
+              placeholder="Label"
+              value={d.label}
+              onChangeText={(t) => updateDetail(d.id, { label: t })}
+            />
+            <View style={styles.rowValue}>
+              {d.kind === 'date' ? (
+                <DateField
+                  value={parseYMD(d.value)}
+                  text={d.value ? formatDetailDate(d.value) : null}
+                  onChange={(date) => updateDetail(d.id, { value: toYMD(date) })}
+                />
+              ) : (
+                <TextInput
+                  style={styles.valueInput}
+                  placeholder="Value"
+                  multiline
+                  value={d.value}
+                  onChangeText={(t) => updateDetail(d.id, { value: t })}
+                />
+              )}
+            </View>
+            <Pressable style={styles.removeBtn} onPress={() => removeDetail(d.id)} hitSlop={8}>
+              <Text style={styles.removeText}>✕</Text>
+            </Pressable>
+          </View>
+        ))}
+
+        <Pressable style={styles.addLabelBtn} onPress={askAddDetail}>
+          <Text style={styles.addLabelText}>+ Add label</Text>
+        </Pressable>
       </View>
 
       <Pressable style={styles.saveBtn} onPress={save}>
@@ -242,14 +404,60 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   placeholderText: { color: '#1a73e8', fontWeight: '600', fontSize: 16 },
+  banner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: '#eef4ff',
+    borderRadius: 8,
+    padding: 12,
+  },
+  bannerText: { flex: 1, color: '#234' },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   chip: { borderWidth: 1, borderColor: '#ccc', borderRadius: 20, paddingVertical: 8, paddingHorizontal: 14 },
   chipActive: { backgroundColor: '#1a73e8', borderColor: '#1a73e8' },
   chipTextActive: { color: 'white' },
-  dateRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  dateSmall: { width: 64, textAlign: 'center' },
-  dateLarge: { width: 96, textAlign: 'center' },
-  slash: { fontSize: 20, color: '#666' },
+
+  detailsBox: {
+    backgroundColor: 'white',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#ddd',
+    padding: 12,
+    gap: 10,
+  },
+  row: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  fixedLabel: { flex: 1, color: '#444', fontWeight: '500', paddingHorizontal: 4 },
+  rowLabel: {
+    flex: 1,
+    color: '#444',
+    fontWeight: '500',
+    borderBottomWidth: 1,
+    borderBottomColor: '#ddd',
+    paddingVertical: 6,
+    paddingHorizontal: 4,
+  },
+  rowValue: { flex: 1.3 },
+  valueInput: {
+    borderWidth: 1,
+    borderColor: '#ccc',
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    backgroundColor: 'white',
+  },
+  removeBtn: { width: 28, height: 28, alignItems: 'center', justifyContent: 'center' },
+  removeText: { color: '#b00020', fontSize: 16, fontWeight: '700' },
+  addLabelBtn: {
+    borderWidth: 1,
+    borderColor: '#1a73e8',
+    borderStyle: 'dashed',
+    borderRadius: 8,
+    padding: 10,
+    alignItems: 'center',
+  },
+  addLabelText: { color: '#1a73e8', fontWeight: '600' },
+
   saveBtn: { backgroundColor: '#1a73e8', borderRadius: 8, padding: 14, alignItems: 'center', marginTop: 24 },
   saveText: { color: 'white', fontWeight: '700', fontSize: 16 },
   deleteBtn: { borderWidth: 1, borderColor: '#b00020', borderRadius: 8, padding: 14, alignItems: 'center', marginTop: 12 },
