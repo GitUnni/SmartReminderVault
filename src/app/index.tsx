@@ -2,23 +2,27 @@ import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
 import { Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useDocuments } from '../lib/DocumentsContext';
+import { formatDate } from '../lib/dates';
+import type { VaultDocument } from '../types/document';
 
-function daysLeft(isoDate: string) {
-  const ms = new Date(isoDate).getTime() - Date.now();
-  return Math.ceil(ms / (1000 * 60 * 60 * 24));
-}
-
-function badgeInfo(days: number) {
+function badgeInfo(expiryDate: string | null) {
+  if (!expiryDate) return { text: 'No expiry', color: '#666' };
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const days = Math.round((new Date(expiryDate).getTime() - today.getTime()) / 86400000);
   if (days < 0) return { text: `Expired ${-days}d ago`, color: '#b00020' };
+  if (days === 0) return { text: 'Expires today', color: '#b00020' };
   if (days <= 30) return { text: `${days} days left`, color: '#e67e00' };
   return { text: `${days} days left`, color: '#2e7d32' };
 }
+
+const timeOf = (d: VaultDocument) => (d.expiryDate ? new Date(d.expiryDate).getTime() : Infinity);
 
 export default function HomeScreen() {
   const router = useRouter();
   const { documents, setPendingImageUri } = useDocuments();
 
-    const startAdd = async () => {
+  const startAdd = async () => {
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) {
       Alert.alert('Permission needed', 'Please allow photo access to add documents.');
@@ -30,13 +34,17 @@ export default function HomeScreen() {
     });
     if (result.canceled) return;
 
-      setPendingImageUri(result.assets[0].uri);
-      router.push('/add');
+    setPendingImageUri(result.assets[0].uri);
+    router.push('/add');
   };
 
-  const sorted = [...documents].sort(
-    (a, b) => new Date(a.expiryDate).getTime() - new Date(b.expiryDate).getTime()
-  );
+  // Nearest expiry first; documents without an expiry go to the bottom
+  const sorted = [...documents].sort((a, b) => {
+    const ta = timeOf(a);
+    const tb = timeOf(b);
+    if (ta === tb) return 0;
+    return ta < tb ? -1 : 1;
+  });
 
   return (
     <View style={styles.container}>
@@ -49,9 +57,9 @@ export default function HomeScreen() {
         <FlatList
           data={sorted}
           keyExtractor={(item) => item.id}
-          contentContainerStyle={{ padding: 16, gap: 12 }}
+          contentContainerStyle={{ padding: 16, paddingBottom: 100, gap: 12 }}
           renderItem={({ item }) => {
-            const badge = badgeInfo(daysLeft(item.expiryDate));
+            const badge = badgeInfo(item.expiryDate);
             return (
               <Pressable
                 style={styles.card}
@@ -60,7 +68,8 @@ export default function HomeScreen() {
                 <View style={{ flex: 1 }}>
                   <Text style={styles.cardTitle}>{item.name}</Text>
                   <Text style={styles.cardSub}>
-                    {item.category} · {new Date(item.expiryDate).toLocaleDateString()}
+                    {item.category}
+                    {item.expiryDate ? ` · ${formatDate(new Date(item.expiryDate))}` : ''}
                   </Text>
                 </View>
                 <Text style={[styles.badge, { color: badge.color }]}>{badge.text}</Text>
