@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createContext, ReactNode, useContext, useEffect, useState } from 'react';
 import { VaultDocument } from '../types/document';
+import { cancelReminders, syncReminders } from './notifications';
 
 const STORAGE_KEY = 'vault-documents';
 
@@ -11,6 +12,8 @@ type DocumentsContextType = {
   deleteDocument: (id: string) => void;
   pendingImageUri: string | null;
   setPendingImageUri: (uri: string | null) => void;
+  pendingImageBase64: string | null;
+  setPendingImageBase64: (b64: string | null) => void;
 };
 
 const DocumentsContext = createContext<DocumentsContextType | null>(null);
@@ -19,12 +22,17 @@ export function DocumentsProvider({ children }: { children: ReactNode }) {
   const [documents, setDocuments] = useState<VaultDocument[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [pendingImageUri, setPendingImageUri] = useState<string | null>(null);
+  const [pendingImageBase64, setPendingImageBase64] = useState<string | null>(null);
 
-  // Load saved documents when the app starts
+  // Load saved documents when the app starts, and refresh their reminders
   useEffect(() => {
     AsyncStorage.getItem(STORAGE_KEY)
       .then((data) => {
-        if (data) setDocuments(JSON.parse(data));
+        if (data) {
+          const list: VaultDocument[] = JSON.parse(data);
+          setDocuments(list);
+          list.forEach((d) => syncReminders(d).catch(() => {}));
+        }
       })
       .catch(() => {})
       .finally(() => setLoaded(true));
@@ -38,19 +46,24 @@ export function DocumentsProvider({ children }: { children: ReactNode }) {
   }, [documents, loaded]);
 
   const addDocument = (doc: Omit<VaultDocument, 'id'>) => {
-    const newDoc = { ...doc, id: Date.now().toString() };
+    const newDoc: VaultDocument = { ...doc, id: Date.now().toString() };
     setDocuments((prev) => [...prev, newDoc]);
+    syncReminders(newDoc).catch(() => {});
   };
-    const updateDocument = (id: string, doc: Omit<VaultDocument, 'id'>) => {
-    setDocuments((prev) => prev.map((d) => (d.id === id ? { ...doc, id } : d)));
+
+  const updateDocument = (id: string, doc: Omit<VaultDocument, 'id'>) => {
+    const updated: VaultDocument = { ...doc, id };
+    setDocuments((prev) => prev.map((d) => (d.id === id ? updated : d)));
+    syncReminders(updated).catch(() => {});
   };
 
   const deleteDocument = (id: string) => {
     setDocuments((prev) => prev.filter((d) => d.id !== id));
+    cancelReminders(id).catch(() => {});
   };
 
   return (
-        <DocumentsContext.Provider
+    <DocumentsContext.Provider
       value={{
         documents,
         addDocument,
@@ -58,6 +71,8 @@ export function DocumentsProvider({ children }: { children: ReactNode }) {
         deleteDocument,
         pendingImageUri,
         setPendingImageUri,
+        pendingImageBase64,
+        setPendingImageBase64,
       }}
     >
       {children}
