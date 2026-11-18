@@ -1,22 +1,8 @@
 import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
-import { Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useDocuments } from '../lib/DocumentsContext';
-import { formatDate } from '../lib/dates';
-import type { VaultDocument } from '../types/document';
-
-function badgeInfo(expiryDate: string | null) {
-  if (!expiryDate) return { text: 'No expiry', color: '#666' };
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const days = Math.round((new Date(expiryDate).getTime() - today.getTime()) / 86400000);
-  if (days < 0) return { text: `Expired ${-days}d ago`, color: '#b00020' };
-  if (days === 0) return { text: 'Expires today', color: '#b00020' };
-  if (days <= 30) return { text: `${days} days left`, color: '#e67e00' };
-  return { text: `${days} days left`, color: '#2e7d32' };
-}
-
-const timeOf = (d: VaultDocument) => (d.expiryDate ? new Date(d.expiryDate).getTime() : Infinity);
+import { GROUPS, daysUntil, groupOf } from '../lib/groups';
 
 export default function HomeScreen() {
   const router = useRouter();
@@ -38,46 +24,45 @@ export default function HomeScreen() {
     router.push('/add');
   };
 
-  // Nearest expiry first; documents without an expiry go to the bottom
-  const sorted = [...documents].sort((a, b) => {
-    const ta = timeOf(a);
-    const tb = timeOf(b);
-    if (ta === tb) return 0;
-    return ta < tb ? -1 : 1;
-  });
-
   return (
     <View style={styles.container}>
-      {sorted.length === 0 ? (
-        <View style={styles.empty}>
-          <Text style={styles.emptyTitle}>No documents yet 🔐</Text>
-          <Text style={styles.emptyText}>Tap the button below to add your first one.</Text>
-        </View>
-      ) : (
-        <FlatList
-          data={sorted}
-          keyExtractor={(item) => item.id}
-          contentContainerStyle={{ padding: 16, paddingBottom: 100, gap: 12 }}
-          renderItem={({ item }) => {
-            const badge = badgeInfo(item.expiryDate);
-            return (
-              <Pressable
-                style={styles.card}
-                onPress={() => router.push({ pathname: '/add', params: { id: item.id } })}
-              >
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.cardTitle}>{item.name}</Text>
-                  <Text style={styles.cardSub}>
-                    {item.category}
-                    {item.expiryDate ? ` · ${formatDate(new Date(item.expiryDate))}` : ''}
-                  </Text>
+      <ScrollView contentContainerStyle={styles.content}>
+        {documents.length === 0 && (
+          <Text style={styles.hint}>Tap "+ Add document" to save your first one 🔐</Text>
+        )}
+
+        {GROUPS.map((g) => {
+          const items = documents.filter((d) => groupOf(d.category) === g.key);
+          // Expired or expiring within 30 days
+          const urgent = items.filter((d) => {
+            const days = daysUntil(d.expiryDate);
+            return days !== null && days <= 30;
+          }).length;
+
+          return (
+            <Pressable
+              key={g.key}
+              style={styles.groupCard}
+              onPress={() => router.push({ pathname: '/group', params: { name: g.key } })}
+            >
+              <Text style={styles.emoji}>{g.emoji}</Text>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.groupTitle}>{g.title}</Text>
+                <Text style={styles.groupDesc}>{g.description}</Text>
+                <Text style={styles.count}>
+                  {items.length} {items.length === 1 ? 'document' : 'documents'}
+                </Text>
+              </View>
+              {urgent > 0 && (
+                <View style={styles.urgentPill}>
+                  <Text style={styles.urgentText}>{urgent} need attention</Text>
                 </View>
-                <Text style={[styles.badge, { color: badge.color }]}>{badge.text}</Text>
-              </Pressable>
-            );
-          }}
-        />
-      )}
+              )}
+              <Text style={styles.chevron}>›</Text>
+            </Pressable>
+          );
+        })}
+      </ScrollView>
 
       <Pressable style={styles.fab} onPress={startAdd}>
         <Text style={styles.fabText}>+ Add document</Text>
@@ -88,20 +73,24 @@ export default function HomeScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#fafafa' },
-  empty: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24, gap: 8 },
-  emptyTitle: { fontSize: 22, fontWeight: 'bold' },
-  emptyText: { color: '#666' },
-  card: {
+  content: { padding: 16, paddingBottom: 110, gap: 14 },
+  hint: { textAlign: 'center', color: '#666', marginBottom: 4 },
+  groupCard: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 14,
     backgroundColor: 'white',
-    padding: 16,
-    borderRadius: 12,
+    padding: 20,
+    borderRadius: 16,
     elevation: 2,
   },
-  cardTitle: { fontSize: 17, fontWeight: '600' },
-  cardSub: { color: '#666', marginTop: 4 },
-  badge: { fontWeight: '600' },
+  emoji: { fontSize: 36 },
+  groupTitle: { fontSize: 20, fontWeight: '700' },
+  groupDesc: { color: '#666', marginTop: 2 },
+  count: { color: '#1a73e8', fontWeight: '600', marginTop: 6 },
+  urgentPill: { backgroundColor: '#fff1e0', borderRadius: 12, paddingVertical: 4, paddingHorizontal: 10 },
+  urgentText: { color: '#e67e00', fontWeight: '600', fontSize: 12 },
+  chevron: { fontSize: 28, color: '#999' },
   fab: {
     position: 'absolute',
     bottom: 32,
