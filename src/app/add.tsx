@@ -14,6 +14,7 @@ import {
 import DateField from '../components/DateField';
 import { formatDate, formatDetailDate, parseYMD, toYMD } from '../lib/dates';
 import { useDocuments } from '../lib/DocumentsContext';
+import { ensurePermission } from '../lib/notifications';
 import { supabase } from '../lib/supabase';
 import { CATEGORIES, type Detail } from '../types/document';
 
@@ -202,7 +203,7 @@ export default function AddScreen() {
   };
 
   // ---------- Save / delete ----------
-  const save = () => {
+  const save = async () => {
     if (analyzing) {
       Alert.alert('Please wait', 'The photo is still being analyzed.');
       return;
@@ -215,6 +216,18 @@ export default function AddScreen() {
       Alert.alert('Name required', 'Please give your document a name.');
       return;
     }
+
+    // Reminders need notification permission (asks once, then remembers)
+    if (expiry) {
+      const allowed = await ensurePermission();
+      if (!allowed) {
+        Alert.alert(
+          'Notifications are off',
+          "The document will be saved, but reminders can't be sent. Turn on notifications for this app in your phone settings."
+        );
+      }
+    }
+
     // Drop empty rows; give unnamed rows a default label
     const cleaned = details
       .filter((d) => d.value.trim())
@@ -357,6 +370,12 @@ export default function AddScreen() {
         </Pressable>
       </View>
 
+      {expiry && (
+        <Text style={styles.reminderNote}>
+          🔔 You'll get a reminder 7 days and 1 day before expiry, at 9:00 AM.
+        </Text>
+      )}
+
       <Pressable style={styles.saveBtn} onPress={save}>
         <Text style={styles.saveText}>Save</Text>
       </Pressable>
@@ -457,6 +476,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   addLabelText: { color: '#1a73e8', fontWeight: '600' },
+  reminderNote: { color: '#555', marginTop: 4 },
 
   saveBtn: { backgroundColor: '#1a73e8', borderRadius: 8, padding: 14, alignItems: 'center', marginTop: 24 },
   saveText: { color: 'white', fontWeight: '700', fontSize: 16 },
