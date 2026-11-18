@@ -24,6 +24,7 @@ function RootNavigator() {
             ),
           }}
         />
+        <Stack.Screen name="group" options={{ title: 'Documents' }} />
         <Stack.Screen name="add" options={{ title: 'Add Document' }} />
       </Stack.Protected>
 
