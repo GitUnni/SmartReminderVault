@@ -22,7 +22,7 @@ const FIELD_LABELS: Record<string, Record<string, string>> = {
   medicine: {
     manufacturingDate: 'Manufactured',
     dosage: 'Dosage',
-    schedule: 'Schedule (please verify)',
+    schedule: 'Schedule',
     instructions: 'Instructions',
     batchNumber: 'Batch number',
   },
