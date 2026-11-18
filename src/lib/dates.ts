@@ -30,3 +30,21 @@ export function formatDetailDate(v: string): string {
   if (!d) return v;
   return v.length === 7 ? `${MONTHS[d.getMonth()]} ${d.getFullYear()}` : formatDate(d);
 }
+
+// "08:30" <-> Date (today at that time) and display text
+export function timeToDate(hhmm: string): Date {
+  const [h, m] = hhmm.split(':').map(Number);
+  const d = new Date();
+  d.setHours(h || 0, m || 0, 0, 0);
+  return d;
+}
+
+export function dateToTime(d: Date): string {
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+// "08:30" -> "8:30 AM"
+export function formatTime(hhmm: string): string {
+  const [h, m] = hhmm.split(':').map(Number);
+  return `${h % 12 || 12}:${pad(m)} ${h >= 12 ? 'PM' : 'AM'}`;
+}
