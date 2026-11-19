@@ -110,7 +110,7 @@ export default function AddScreen() {
       return;
     }
     if (r.type === 'menu') {
-      setNote('This looks like a menu. Menu scanning is coming soon. You can still save it manually.');
+      setNote('This looks like a menu. Use the Nutrition tab to scan menus and see nutrition details.');
       return;
     }
 
