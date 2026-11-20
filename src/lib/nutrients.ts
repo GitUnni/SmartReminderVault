@@ -1,5 +1,5 @@
 export type NutrientKey =
-  | 'kcal' | 'protein' | 'carbs' | 'fat' | 'fiber' | 'sugar' | 'sodium'
+  | 'kcal' | 'protein' | 'carbs' | 'fat' | 'satFat' | 'fiber' | 'sugar' | 'sodium'
   | 'calcium' | 'iron' | 'magnesium' | 'phosphorus' | 'potassium' | 'zinc'
   | 'copper' | 'manganese' | 'selenium'
   | 'vitA' | 'vitC' | 'vitD' | 'vitE' | 'vitK' | 'folate' | 'b12' | 'choline'
@@ -10,6 +10,7 @@ export type Per100g = Partial<Record<NutrientKey, number>>;
 export type Ingredient = {
   name: string;
   grams: number;
+  typicalMaxGrams?: number; // largest amount normally found in one serving (AI estimate)
   state: string;
   amountBasis: 'visible' | 'typical';
   source: 'usda' | 'ai_estimate' | 'zero';
@@ -17,12 +18,14 @@ export type Ingredient = {
   per100g: Per100g;
 };
 
+export type WatchFlag = { id: string; allergens: string[]; spottedIn: string };
+
 export type Dish = {
   name: string;
   serving: string;
   confidence: 'high' | 'medium' | 'low';
   notes: string[];
-  watchOuts: string[];
+  watchOuts: WatchFlag[];
   bioactives: string[];
   ingredients: Ingredient[];
 };
@@ -48,6 +51,7 @@ export const NUTRIENTS: Record<NutrientKey, Def> = {
   },
   carbs: { label: 'Carbohydrates', unit: 'g', ref: 275, refNote: fda('275 g'), highlight: false, short: '', health: '' },
   fat: { label: 'Fat', unit: 'g', ref: 78, refNote: fda('78 g'), highlight: false, short: '', health: '' },
+  satFat: { label: 'Saturated fat', unit: 'g', ref: 20, refNote: fda('20 g'), highlight: false, short: '', health: '' },
   fiber: {
     label: 'Dietary fiber', unit: 'g', ref: 28, refNote: fda('28 g'), highlight: true,
     short: 'Supports digestion',

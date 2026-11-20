@@ -1,6 +1,8 @@
 import { createContext, ReactNode, useContext, useState } from 'react';
-import { NUTRIENTS, type Dish, type Ingredient, type NutrientKey, type Per100g } from './nutrients';
-
+import { ALLERGENS, CONCERN_IDS } from './concerns';
+import {
+  NUTRIENTS, type Dish, type Ingredient, type NutrientKey, type Per100g, type WatchFlag,
+} from './nutrients';
 const str = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
 
 const strList = (v: unknown, max: number): string[] =>
@@ -14,6 +16,23 @@ function normPer100g(v: any): Per100g {
     (Object.keys(NUTRIENTS) as NutrientKey[]).forEach((k) => {
       const n = v[k];
       if (typeof n === 'number' && isFinite(n) && n >= 0) out[k] = n;
+    });
+  }
+  return out;
+}
+
+// Keeps only watch-outs from the approved list, so the app controls all explanations
+function normWatch(v: unknown): WatchFlag[] {
+  if (!Array.isArray(v)) return [];
+  const out: WatchFlag[] = [];
+  for (const w of v as any[]) {
+    if (!w || typeof w.id !== 'string' || !(CONCERN_IDS as readonly string[]).includes(w.id)) continue;
+    out.push({
+      id: w.id,
+      allergens: Array.isArray(w.allergens)
+        ? w.allergens.filter((a: unknown): a is string => typeof a === 'string' && ALLERGENS.includes(a))
+        : [],
+      spottedIn: typeof w.spottedIn === 'string' ? w.spottedIn.trim().slice(0, 80) : '',
     });
   }
   return out;
@@ -39,6 +58,10 @@ export function normalizeDishes(items: unknown): Dish[] {
         amountBasis: r.amountBasis === 'visible' ? 'visible' : 'typical',
         source: r.source === 'usda' ? 'usda' : r.source === 'zero' ? 'zero' : 'ai_estimate',
         matched: str(r.matched) || null,
+        typicalMaxGrams:
+          typeof r.typicalMaxGrams === 'number' && isFinite(r.typicalMaxGrams) && r.typicalMaxGrams > 0
+            ? Math.min(r.typicalMaxGrams, 5000)
+            : undefined,
         per100g: normPer100g(r.per100g),
       });
     }
@@ -49,7 +72,7 @@ export function normalizeDishes(items: unknown): Dish[] {
       serving: str(raw.serving),
       confidence: ['high', 'medium', 'low'].includes(raw.confidence) ? raw.confidence : 'low',
       notes: strList(raw.notes, 3),
-      watchOuts: strList(raw.watchOuts, 3),
+      watchOuts: normWatch(raw.watchOuts),
       bioactives: strList(raw.bioactives, 3),
       ingredients,
     });

@@ -2,15 +2,22 @@ import { Stack, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useNutrition } from '../lib/NutritionContext';
+import { buildWatchItems, type Severity } from '../lib/concerns';
 import {
   NUTRIENTS, REFERENCE_NOTE, computeTotals, fmtAmount, getHighlights, type NutrientKey,
 } from '../lib/nutrients';
 
 const MULTIPLIERS = [0.5, 1, 1.5, 2];
-const TILES: NutrientKey[] = ['protein', 'carbs', 'fat', 'fiber', 'sugar', 'sodium'];
+const TILES: NutrientKey[] = ['protein', 'carbs', 'fat', 'satFat', 'fiber', 'sugar', 'sodium'];
 
 const CONFIDENCE_LABEL = { high: 'High confidence', medium: 'Medium confidence', low: 'Low confidence' };
 const CONFIDENCE_COLOR = { high: '#2e7d32', medium: '#e67e00', low: '#b00020' };
+const SEV_COLOR: Record<Severity, string> = {
+  info: '#8d99ae',
+  notice: '#e6a100',
+  strong: '#e67e00',
+  extreme: '#b00020',
+};
 
 const gramText = (g: number) => String(Math.round(g * 10) / 10);
 
@@ -32,6 +39,7 @@ export default function DishScreen() {
     );
   }
 
+  // Everything below is recalculated from these amounts on every edit
   const effective = gramsText.map((t) => {
     const n = parseFloat(t.replace(',', '.'));
     return isFinite(n) && n > 0 ? Math.min(n, 5000) : 0;
@@ -39,6 +47,7 @@ export default function DishScreen() {
 
   const totals = computeTotals(dish.ingredients, effective);
   const highlights = getHighlights(totals);
+  const watchItems = buildWatchItems(dish, totals, effective);
   const kcal = totals.kcal?.amount;
   const totalGrams = effective.reduce((a, b) => a + b, 0);
 
@@ -149,6 +158,21 @@ export default function DishScreen() {
         ))}
       </View>
 
+      {/* Key nutrients */}
+      <Text style={styles.heading}>Key nutrients</Text>
+      <View style={styles.grid}>
+        {TILES.map((key) => {
+          const t = tileValue(key);
+          return (
+            <View key={key} style={styles.tile}>
+              <Text style={styles.tileLabel}>{NUTRIENTS[key].label}</Text>
+              <Text style={styles.tileValue}>{t.value}</Text>
+              {t.pct !== null && <Text style={styles.tilePct}>{t.pct}% DV</Text>}
+            </View>
+          );
+        })}
+      </View>
+
       {/* Nutritional Highlights */}
       <Text style={styles.heading}>Nutritional Highlights</Text>
       {highlights.length === 0 ? (
@@ -179,21 +203,6 @@ export default function DishScreen() {
         ))
       )}
 
-      {/* Key nutrients */}
-      <Text style={styles.heading}>Key nutrients</Text>
-      <View style={styles.grid}>
-        {TILES.map((key) => {
-          const t = tileValue(key);
-          return (
-            <View key={key} style={styles.tile}>
-              <Text style={styles.tileLabel}>{NUTRIENTS[key].label}</Text>
-              <Text style={styles.tileValue}>{t.value}</Text>
-              {t.pct !== null && <Text style={styles.tilePct}>{t.pct}% DV</Text>}
-            </View>
-          );
-        })}
-      </View>
-
       {/* Health relevance */}
       {highlights.length > 0 && (
         <View style={styles.card}>
@@ -219,13 +228,40 @@ export default function DishScreen() {
         </View>
       )}
 
-      {dish.watchOuts.length > 0 && (
-        <View style={styles.card}>
-          <Text style={styles.sectionTitle}>Watch out for</Text>
-          {dish.watchOuts.map((w, i) => (
-            <Text key={i} style={styles.watch}>• {w}</Text>
+      {/* Watch out for: recalculated from the amounts above */}
+      {watchItems.length > 0 && (
+        <>
+          <Text style={styles.heading}>Watch out for</Text>
+          {watchItems.map((w) => (
+            <View
+              key={w.key}
+              style={[styles.card, styles.watchCard, { borderLeftColor: SEV_COLOR[w.severity] }]}
+            >
+              <View style={styles.watchTop}>
+                <Text style={styles.watchTitle}>{w.title}</Text>
+                {w.badge && (
+                  <View style={[styles.sevPill, { backgroundColor: SEV_COLOR[w.severity] }]}>
+                    <Text style={styles.sevText}>{w.badge}</Text>
+                  </View>
+                )}
+              </View>
+
+              {w.summary && <Text style={styles.watchSummary}>{w.summary}</Text>}
+              {w.spotted !== '' && <Text style={styles.spotted}>{w.spotted}</Text>}
+
+              <Text style={styles.watchLabel}>Why it matters</Text>
+              <Text style={styles.watchText}>{w.why}</Text>
+
+              <Text style={styles.watchLabel}>General guideline</Text>
+              <Text style={styles.watchText}>{w.guideline}</Text>
+
+              {w.quantityNote && <Text style={styles.watchNote}>{w.quantityNote}</Text>}
+            </View>
           ))}
-        </View>
+          <Text style={styles.watchFooter}>
+            These warnings are recalculated from the amounts you set above. Guidelines are for the general healthy adult population unless stated. Individual needs differ. If you are pregnant, have a health condition, or take medication, ask a doctor or dietitian what applies to you.
+          </Text>
+        </>
       )}
 
       {/* Transparency */}
@@ -299,5 +335,15 @@ const styles = StyleSheet.create({
   health: { color: '#333', lineHeight: 21, marginTop: 4 },
   healthLabel: { fontWeight: '700' },
   plain: { color: '#333', lineHeight: 21 },
-  watch: { color: '#b45309', lineHeight: 22 },
+  watchCard: { borderLeftWidth: 5 },
+  watchTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' },
+  watchTitle: { fontSize: 17, fontWeight: '700', flexShrink: 1 },
+  sevPill: { borderRadius: 10, paddingVertical: 3, paddingHorizontal: 10 },
+  sevText: { color: 'white', fontSize: 11, fontWeight: '700' },
+  watchSummary: { color: '#111', fontWeight: '600', lineHeight: 21, marginTop: 4 },
+  spotted: { color: '#777', fontSize: 12, fontStyle: 'italic' },
+  watchLabel: { fontSize: 12, fontWeight: '700', color: '#b45309', marginTop: 8, textTransform: 'uppercase' },
+  watchText: { color: '#333', lineHeight: 21 },
+  watchNote: { color: '#666', fontSize: 12, lineHeight: 18, marginTop: 8 },
+  watchFooter: { color: '#777', fontSize: 12, lineHeight: 18 },
 });
