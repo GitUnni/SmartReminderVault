@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { APP_NAME } from '../lib/config';
 import { supabase } from '../lib/supabase';
 
 export default function LoginScreen() {
@@ -31,8 +32,8 @@ export default function LoginScreen() {
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>Paperwork Vault 🔐</Text>
-      <Text style={styles.subtitle}>Sign in to access your documents</Text>
+      <Text style={styles.title}>{APP_NAME} 🥗</Text>
+      <Text style={styles.subtitle}>Sign in to scan menus and meals</Text>
 
       <TextInput
         style={styles.input}
